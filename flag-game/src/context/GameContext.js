@@ -9,7 +9,7 @@ import React, {
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { fetchFlags, fetchCapitals } from '../services/api';
 
-// ─── Constantes ────────────────────────────────────────────────────────────────
+// ─── Constants ─────────────────────────────────────────────────────────────────
 const TIMER_SECONDS = 15;
 const HINT_PENALTY_SECONDS = 2;
 const LEADERBOARD_KEY = 'flag_game_leaderboard';
@@ -26,57 +26,71 @@ export function useGame() {
 
 // ─── Provider ──────────────────────────────────────────────────────────────────
 export function GameProvider({ children }) {
-  // Datos de la API
-  const [countries, setCountries] = useState([]);       // [{ name, flag }]
-  const [capitalsData, setCapitalsData] = useState([]); // [{ name, capital }]
+  // API data
+  const [countries, setCountries] = useState([]);       // [{ name, flag, capital }]
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
-  // Estado del juego base
+  // Game state
   const [currentCountry, setCurrentCountry] = useState(null);
   const [score, setScore] = useState(0);
   const [gameMode, setGameMode] = useState('flags'); // 'flags' | 'capitals'
   const [gameStarted, setGameStarted] = useState(false);
-
-  // Jugador actual
   const [playerName, setPlayerName] = useState('');
 
   // Timer
   const [timeLeft, setTimeLeft] = useState(TIMER_SECONDS);
   const [timerActive, setTimerActive] = useState(false);
   const timerRef = useRef(null);
+  const timeLeftRef = useRef(TIMER_SECONDS);
 
-  // Pistas (modo banderas)
-  const [revealedLetters, setRevealedLetters] = useState([]); // índices revelados
+  // Flag mode hints — indices of revealed characters
+  const [revealedLetters, setRevealedLetters] = useState([]);
   const [hintCount, setHintCount] = useState(0);
 
-  // Modo capitales: opciones de respuesta
-  const [capitalOptions, setCapitalOptions] = useState([]); // [{ capital, isCorrect }]
-  const [eliminatedOptions, setEliminatedOptions] = useState([]); // índices eliminados por pista
+  // Capitals mode — multiple choice options
+  const [capitalOptions, setCapitalOptions] = useState([]);
+  const [eliminatedOptions, setEliminatedOptions] = useState([]);
   const capitalHintTimerRef = useRef(null);
 
-  // Feedback de respuesta
-  const [feedback, setFeedback] = useState(null); // 'correct' | 'wrong' | null
+  // Feedback overlay
+  const [feedback, setFeedback] = useState(null); // 'correct' | 'wrong' | 'timeout' | null
 
-  // Leaderboard
+  // Leaderboards
   const [leaderboard, setLeaderboard] = useState([]);
   const [capitalsLeaderboard, setCapitalsLeaderboard] = useState([]);
 
-  // ── Carga de datos ────────────────────────────────────────────────────────────
+  // Refs for stale-closure-safe access
+  const gameModeRef = useRef(gameMode);
+  const scoreRef = useRef(score);
+  const playerNameRef = useRef(playerName);
+  const leaderboardRef = useRef(leaderboard);
+  const capitalsLeaderboardRef = useRef(capitalsLeaderboard);
+  const countriesRef = useRef(countries);
+
+  useEffect(() => { gameModeRef.current = gameMode; }, [gameMode]);
+  useEffect(() => { timeLeftRef.current = timeLeft; }, [timeLeft]);
+  useEffect(() => { scoreRef.current = score; }, [score]);
+  useEffect(() => { playerNameRef.current = playerName; }, [playerName]);
+  useEffect(() => { leaderboardRef.current = leaderboard; }, [leaderboard]);
+  useEffect(() => { capitalsLeaderboardRef.current = capitalsLeaderboard; }, [capitalsLeaderboard]);
+  useEffect(() => { countriesRef.current = countries; }, [countries]);
+
+  // ── Data loading ──────────────────────────────────────────────────────────────
   useEffect(() => {
     async function loadData() {
       try {
         setLoading(true);
         const [flags, capitals] = await Promise.all([fetchFlags(), fetchCapitals()]);
-        // Cruzar datos para tener { name, flag, capital }
-        const enriched = flags.map((c) => {
-          const capEntry = capitals.find(
-            (cap) => cap.name.toLowerCase() === c.name.toLowerCase()
-          );
-          return { ...c, capital: capEntry?.capital || null };
-        });
+        const enriched = flags
+          .filter((c) => c.flag) // skip entries without a flag URL
+          .map((c) => {
+            const capEntry = capitals.find(
+              (cap) => cap.name.toLowerCase() === c.name.toLowerCase()
+            );
+            return { ...c, capital: capEntry?.capital || null };
+          });
         setCountries(enriched);
-        setCapitalsData(capitals);
       } catch (e) {
         setError(e.message);
       } finally {
@@ -86,24 +100,25 @@ export function GameProvider({ children }) {
     loadData();
   }, []);
 
-  // ── Leaderboard desde AsyncStorage ───────────────────────────────────────────
+  // ── Leaderboard from AsyncStorage ─────────────────────────────────────────────
   useEffect(() => {
-    loadLeaderboard();
+    async function loadBoards() {
+      try {
+        const raw = await AsyncStorage.getItem(LEADERBOARD_KEY);
+        if (raw) setLeaderboard(JSON.parse(raw));
+        const rawCap = await AsyncStorage.getItem(CAPITALS_LEADERBOARD_KEY);
+        if (rawCap) setCapitalsLeaderboard(JSON.parse(rawCap));
+      } catch (_) {}
+    }
+    loadBoards();
   }, []);
 
-  async function loadLeaderboard() {
-    try {
-      const raw = await AsyncStorage.getItem(LEADERBOARD_KEY);
-      if (raw) setLeaderboard(JSON.parse(raw));
-      const rawCap = await AsyncStorage.getItem(CAPITALS_LEADERBOARD_KEY);
-      if (rawCap) setCapitalsLeaderboard(JSON.parse(rawCap));
-    } catch (_) {}
-  }
-
   async function saveToLeaderboard(name, finalScore, mode) {
-    const key = mode === 'capitals' ? CAPITALS_LEADERBOARD_KEY : LEADERBOARD_KEY;
-    const setFn = mode === 'capitals' ? setCapitalsLeaderboard : setLeaderboard;
-    const currentBoard = mode === 'capitals' ? capitalsLeaderboard : leaderboard;
+    const isCapitals = mode === 'capitals';
+    const key = isCapitals ? CAPITALS_LEADERBOARD_KEY : LEADERBOARD_KEY;
+    const currentBoard = isCapitals
+      ? capitalsLeaderboardRef.current
+      : leaderboardRef.current;
 
     const existing = currentBoard.find((e) => e.name === name);
     let updated;
@@ -115,7 +130,13 @@ export function GameProvider({ children }) {
       updated = [...currentBoard, { name, score: finalScore }];
     }
     updated.sort((a, b) => b.score - a.score);
-    setFn(updated);
+
+    if (isCapitals) {
+      setCapitalsLeaderboard(updated);
+    } else {
+      setLeaderboard(updated);
+    }
+
     try {
       await AsyncStorage.setItem(key, JSON.stringify(updated));
     } catch (_) {}
@@ -130,43 +151,56 @@ export function GameProvider({ children }) {
     setTimerActive(false);
   }, []);
 
+  // handleTimeUp is defined after pickRandomCountry via ref to avoid circular deps
+  const handleTimeUpRef = useRef(null);
+
   const startTimer = useCallback(() => {
     stopTimer();
     setTimeLeft(TIMER_SECONDS);
+    timeLeftRef.current = TIMER_SECONDS;
     setTimerActive(true);
     timerRef.current = setInterval(() => {
       setTimeLeft((prev) => {
-        if (prev <= 1) {
+        const next = prev - 1;
+        timeLeftRef.current = next;
+        if (next <= 0) {
           clearInterval(timerRef.current);
           timerRef.current = null;
           setTimerActive(false);
-          // Tiempo agotado: siguiente país sin sumar puntos
-          handleTimeUp();
+          if (handleTimeUpRef.current) handleTimeUpRef.current();
           return 0;
         }
-        return prev - 1;
+        return next;
       });
     }, 1000);
   }, [stopTimer]);
 
-  function handleTimeUp() {
-    setFeedback('timeout');
-    setTimeout(() => {
-      setFeedback(null);
-      pickRandomCountry();
-    }, 1500);
+  // ── Build capital options ─────────────────────────────────────────────────────
+  function buildCapitalOptions(correct, source) {
+    const wrongPool = source.filter(
+      (c) => c.capital && c.name !== correct.name
+    );
+    const wrongs = wrongPool
+      .sort(() => Math.random() - 0.5)
+      .slice(0, 3)
+      .map((c) => ({ capital: c.capital, isCorrect: false }));
+
+    // Ensure we always have the correct answer
+    const correctOption = { capital: correct.capital || '—', isCorrect: true };
+    const all = [...wrongs, correctOption].sort(() => Math.random() - 0.5);
+    return all;
   }
 
-  // ── Pista capital: eliminar opción cada 5s ────────────────────────────────────
-  function startCapitalHintTimer(optionsLength) {
+  // ── Capital hint timer (eliminates wrong options every 5s) ────────────────────
+  function startCapitalHintTimer(options) {
     if (capitalHintTimerRef.current) clearInterval(capitalHintTimerRef.current);
     setEliminatedOptions([]);
+
     capitalHintTimerRef.current = setInterval(() => {
       setEliminatedOptions((prev) => {
-        // Eliminar una incorrecta que no esté ya eliminada
-        const wrongIndices = Array.from({ length: optionsLength }, (_, i) => i).filter(
-          (i) => !capitalOptions[i]?.isCorrect && !prev.includes(i)
-        );
+        const wrongIndices = options
+          .map((o, i) => (!o.isCorrect && !prev.includes(i) ? i : null))
+          .filter((i) => i !== null);
         if (wrongIndices.length === 0) {
           clearInterval(capitalHintTimerRef.current);
           return prev;
@@ -177,13 +211,18 @@ export function GameProvider({ children }) {
     }, 5000);
   }
 
-  // ── Elegir país al azar ───────────────────────────────────────────────────────
+  // ── Pick random country ───────────────────────────────────────────────────────
   const pickRandomCountry = useCallback(
-    (list) => {
-      const source = list || countries;
+    (overrideList, overrideMode) => {
+      const source = overrideList || countriesRef.current;
+      const mode = overrideMode || gameModeRef.current;
       if (!source.length) return;
+
       stopTimer();
-      if (capitalHintTimerRef.current) clearInterval(capitalHintTimerRef.current);
+      if (capitalHintTimerRef.current) {
+        clearInterval(capitalHintTimerRef.current);
+        capitalHintTimerRef.current = null;
+      }
 
       const rand = source[Math.floor(Math.random() * source.length)];
       setCurrentCountry(rand);
@@ -191,49 +230,50 @@ export function GameProvider({ children }) {
       setHintCount(0);
       setEliminatedOptions([]);
 
-      if (gameMode === 'capitals') {
+      if (mode === 'capitals') {
         const options = buildCapitalOptions(rand, source);
         setCapitalOptions(options);
-        startCapitalHintTimer(options.length);
+        startCapitalHintTimer(options); // pass options directly — no stale closure
       }
 
       startTimer();
     },
-    [countries, gameMode, startTimer, stopTimer]
+    [stopTimer, startTimer]
   );
 
-  function buildCapitalOptions(correct, source) {
-    const wrongs = source
-      .filter((c) => c.capital && c.name !== correct.name)
-      .sort(() => Math.random() - 0.5)
-      .slice(0, 3)
-      .map((c) => ({ capital: c.capital, isCorrect: false }));
+  // handleTimeUp needs pickRandomCountry, wire via ref
+  handleTimeUpRef.current = () => {
+    setFeedback('timeout');
+    setTimeout(() => {
+      setFeedback(null);
+      pickRandomCountry();
+    }, 1500);
+  };
 
-    const all = [...wrongs, { capital: correct.capital, isCorrect: true }].sort(
-      () => Math.random() - 0.5
-    );
-    return all;
-  }
-
-  // ── Iniciar juego ─────────────────────────────────────────────────────────────
+  // ── Start game ────────────────────────────────────────────────────────────────
   function startGame(name, mode = 'flags') {
     setPlayerName(name);
+    playerNameRef.current = name;
     setScore(0);
+    scoreRef.current = 0;
     setGameMode(mode);
+    gameModeRef.current = mode;
     setGameStarted(true);
     setFeedback(null);
-    pickRandomCountry(countries);
+    pickRandomCountry(countriesRef.current, mode);
   }
 
-  // ── Adivinar bandera (texto libre) ───────────────────────────────────────────
+  // ── Guess (flag mode, free text) ─────────────────────────────────────────────
   function guess(input) {
     if (!currentCountry || feedback) return;
     const normalized = input.trim().toLowerCase();
     const correct = currentCountry.name.toLowerCase();
 
     if (normalized === correct) {
-      const bonus = timeLeft; // segundos restantes
-      setScore((s) => s + 10 + bonus);
+      const bonus = timeLeftRef.current;
+      const newScore = scoreRef.current + 10 + bonus;
+      scoreRef.current = newScore;
+      setScore(newScore);
       setFeedback('correct');
       stopTimer();
       setTimeout(() => {
@@ -241,57 +281,68 @@ export function GameProvider({ children }) {
         pickRandomCountry();
       }, 1200);
     } else {
-      setScore((s) => Math.max(0, s - 1));
+      const newScore = Math.max(0, scoreRef.current - 1);
+      scoreRef.current = newScore;
+      setScore(newScore);
       setFeedback('wrong');
       setTimeout(() => setFeedback(null), 800);
     }
   }
 
-  // ── Adivinar capital (opción múltiple) ───────────────────────────────────────
+  // ── Guess capital (multiple choice) ─────────────────────────────────────────
   function guessCapital(option) {
     if (!currentCountry || feedback) return;
     if (option.isCorrect) {
-      const bonus = timeLeft;
-      setScore((s) => s + 10 + bonus);
+      const bonus = timeLeftRef.current;
+      const newScore = scoreRef.current + 10 + bonus;
+      scoreRef.current = newScore;
+      setScore(newScore);
       setFeedback('correct');
       stopTimer();
-      if (capitalHintTimerRef.current) clearInterval(capitalHintTimerRef.current);
+      if (capitalHintTimerRef.current) {
+        clearInterval(capitalHintTimerRef.current);
+        capitalHintTimerRef.current = null;
+      }
       setTimeout(() => {
         setFeedback(null);
         pickRandomCountry();
       }, 1200);
     } else {
-      setScore((s) => Math.max(0, s - 1));
+      const newScore = Math.max(0, scoreRef.current - 1);
+      scoreRef.current = newScore;
+      setScore(newScore);
       setFeedback('wrong');
       setTimeout(() => setFeedback(null), 800);
     }
   }
 
-  // ── Pista (modo banderas) ─────────────────────────────────────────────────────
+  // ── Hint (flag mode) — reveal a random letter, -2s ───────────────────────────
   function requestHint() {
     if (!currentCountry) return;
     const name = currentCountry.name;
-    const allIndices = Array.from({ length: name.length }, (_, i) => i).filter(
+    const hiddenIndices = Array.from({ length: name.length }, (_, i) => i).filter(
       (i) => name[i] !== ' ' && !revealedLetters.includes(i)
     );
-    if (allIndices.length === 0) return;
+    if (hiddenIndices.length === 0) return;
 
-    const pick = allIndices[Math.floor(Math.random() * allIndices.length)];
+    const pick = hiddenIndices[Math.floor(Math.random() * hiddenIndices.length)];
     setRevealedLetters((prev) => [...prev, pick]);
     setHintCount((h) => h + 1);
-
-    // Penalización: -2 segundos del timer
-    setTimeLeft((t) => {
-      const next = Math.max(1, t - HINT_PENALTY_SECONDS);
-      return next;
-    });
+    const newTime = Math.max(1, timeLeftRef.current - HINT_PENALTY_SECONDS);
+    timeLeftRef.current = newTime;
+    setTimeLeft(newTime);
   }
 
-  // ── Terminar juego (guardar en leaderboard) ───────────────────────────────────
+  // ── End game ──────────────────────────────────────────────────────────────────
   function endGame() {
     stopTimer();
-    if (capitalHintTimerRef.current) clearInterval(capitalHintTimerRef.current);
-    if (playerName) saveToLeaderboard(playerName, score, gameMode);
+    if (capitalHintTimerRef.current) {
+      clearInterval(capitalHintTimerRef.current);
+      capitalHintTimerRef.current = null;
+    }
+    if (playerNameRef.current) {
+      saveToLeaderboard(playerNameRef.current, scoreRef.current, gameModeRef.current);
+    }
     setGameStarted(false);
     setCurrentCountry(null);
     setFeedback(null);
@@ -300,15 +351,18 @@ export function GameProvider({ children }) {
   // ── Reset score ───────────────────────────────────────────────────────────────
   function resetScore() {
     setScore(0);
+    scoreRef.current = 0;
   }
 
-  // ── Next country (skip) ───────────────────────────────────────────────────────
+  // ── Skip to next country ──────────────────────────────────────────────────────
   function nextCountry() {
-    if (playerName) saveToLeaderboard(playerName, score, gameMode);
+    if (playerNameRef.current) {
+      saveToLeaderboard(playerNameRef.current, scoreRef.current, gameModeRef.current);
+    }
     pickRandomCountry();
   }
 
-  // ── Cleanup ───────────────────────────────────────────────────────────────────
+  // ── Cleanup on unmount ────────────────────────────────────────────────────────
   useEffect(() => {
     return () => {
       stopTimer();
@@ -316,12 +370,13 @@ export function GameProvider({ children }) {
     };
   }, [stopTimer]);
 
+  // ── Context value ─────────────────────────────────────────────────────────────
   const value = {
-    // Datos
+    // Data
     countries,
     loading,
     error,
-    // Estado del juego
+    // Game state
     currentCountry,
     score,
     gameMode,
@@ -331,16 +386,16 @@ export function GameProvider({ children }) {
     // Timer
     timeLeft,
     timerActive,
-    // Pistas banderas
+    // Flag hints
     revealedLetters,
     hintCount,
-    // Capitales
+    // Capitals
     capitalOptions,
     eliminatedOptions,
     // Leaderboards
     leaderboard,
     capitalsLeaderboard,
-    // Acciones
+    // Actions
     startGame,
     endGame,
     guess,
